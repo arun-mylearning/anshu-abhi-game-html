@@ -1,0 +1,46 @@
+name: Build & Deploy Scratch Game
+
+on:
+  push:
+    branches:
+      - main    # or your default branch
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    # 1. Check out the repo
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    # 2. Set up Node.js for TurboWarp
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '16.x'
+
+    # 3. Install TurboWarp Packager CLI
+    - name: Install TurboWarp Packager
+      run: npm install -g @turbowarp/packager
+
+    # 4. Build the HTML5 export
+    - name: Package Scratch to HTML
+      run: |
+        turbopackager Anshu&Abhi-Game.sb3 \
+          --target html \
+          --output site.zip
+
+    # 5. Unzip the generated site
+    - name: Unzip site.zip
+      run: |
+        unzip site.zip -d site
+
+    # 6. Deploy to Azure App Service
+    - name: 'Deploy to Azure Web App'
+      uses: azure/webapps-deploy@v2
+      with:
+        app-name: 'anshu-abhi-balloongame'             # Azure App Service name
+        slot-name: 'production'
+        publish-profile: ${{ secrets.AZURE_CREDENTIALS }}
+        package: 'site'
