@@ -4,7 +4,7 @@ trigger:
       - main
 
 pool:
-  name: LocalAgentPool
+  name: Default
 
 variables:
   SB3_FILE: 'AnshuAbhi-Game.sb3'
