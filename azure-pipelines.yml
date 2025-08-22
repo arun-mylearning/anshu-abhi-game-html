@@ -1,0 +1,45 @@
+trigger:
+  branches: [ main ]
+
+pool:
+  name: LocalAgentPool
+
+variables:
+  SB3_FILE: 'AnshuAbhi-Game.sb3'
+  BUILD_DIR: 'site'
+
+steps:
+- script: |
+    pushd "%BUILD_SOURCESDIRECTORY%"
+    echo "Working directory: %CD%"
+  displayName: 'cd to sources'
+
+- script: |
+    echo "Verify %SB3_FILE% exists"
+    if not exist "%SB3_FILE%" exit /b 1
+  displayName: 'Verify .sb3 exists'
+
+- script: |
+    npm init -y >nul
+    npm install @turbowarp/packager --no-save
+    npx turbopackager "%SB3_FILE%" --target html --output "site.zip"
+    if not exist "site.zip" exit /b 1
+  displayName: 'Package Scratch to HTML'
+
+- task: ExtractFiles@1
+  inputs:
+    archiveFilePatterns: '$(Build.SourcesDirectory)\site.zip'
+    destinationFolder: '$(Build.ArtifactStagingDirectory)\$(BUILD_DIR)'
+    cleanDestinationFolder: true
+  displayName: 'Extract site.zip'
+
+- script: |
+    if not exist "$(Build.ArtifactStagingDirectory)\$(BUILD_DIR)\index.html" exit /b 1
+  displayName: 'Verify extraction'
+
+- script: |
+    npm install @azure/static-web-apps-cli --no-save
+    npx swa deploy "$(Build.ArtifactStagingDirectory)\$(BUILD_DIR)" --deployment-token "$(SWA_TOKEN)" --env production --app-name "anshu-abhi-balloongame"
+  displayName: 'Deploy to Azure Static Web Apps'
+  env:
+    SWA_TOKEN: $(SWA_TOKEN)
