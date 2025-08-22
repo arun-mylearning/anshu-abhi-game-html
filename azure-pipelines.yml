@@ -1,5 +1,7 @@
 trigger:
-  branches: [ main ]
+  branches:
+    include:
+      - main
 
 pool:
   name: LocalAgentPool
@@ -7,6 +9,8 @@ pool:
 variables:
   SB3_FILE: 'AnshuAbhi-Game.sb3'
   BUILD_DIR: 'site'
+
+# (rest of the file)
 
 steps:
 - script: |
