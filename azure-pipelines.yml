@@ -1,75 +1,88 @@
+# azure-pipelines.yml
 trigger:
 - main
 
 pool:
-  name: Default   # self-hosted Windows pool
+  name: Default   # Replace with your self-hosted Windows agent pool
 
-# If index.html is in a subfolder, change SourceFolder (example: '$(Build.SourcesDirectory)\web')
 variables:
+  # If your index.html is in a subfolder, set this to that folder.
+  # For root, leave as below.
   SourceFolder: '$(Build.SourcesDirectory)'
 
 steps:
-# 0) Sanity: show folders and list repo files
-- powershell: |
-    Write-Host "Agent.HomeDirectory: $(Agent.HomeDirectory)"
-    Write-Host "Agent.WorkFolder:   $(Agent.WorkFolder)"
-    Write-Host "Build.SourcesDirectory: $(Build.SourcesDirectory)"
-    Write-Host "Build.ArtifactStagingDirectory: $(Build.ArtifactStagingDirectory)"
-    Write-Host "Listing SourceFolder: $(SourceFolder)"
-    Get-ChildItem -Force "$(SourceFolder)" | Select Name,Length,LastWriteTime | Format-Table
-  displayName: "Debug: show directories and repo files"
+# 1) Checkout the repo
+- checkout: self
+  clean: true
 
-# 1) Verify index.html exists where we expect
-- powershell: |
-    $index = Join-Path "$(SourceFolder)" "index.html"
-    if (!(Test-Path $index)) {
-      Write-Error "index.html not found in $(SourceFolder). Move/commit index.html there or update 'SourceFolder'."
-      exit 1
-    }
-    Write-Host "Found index.html: $index"
+# 2) Debug: list files in the repo root to confirm index.html is present
+- task: PowerShell@2
+  displayName: "Debug: list repo root"
+  inputs:
+    targetType: inline
+    script: |
+      Write-Host "Build.SourcesDirectory: $(Build.SourcesDirectory)"
+      Get-ChildItem -Force "$(SourceFolder)" |
+        Select Name,FullName,Length,LastWriteTime |
+        Format-Table
+
+# 3) Verify that index.html exists
+- task: PowerShell@2
   displayName: "Verify index.html exists"
+  inputs:
+    targetType: inline
+    script: |
+      $index = Join-Path "$(SourceFolder)" "index.html"
+      if (!(Test-Path $index)) {
+        Write-Error "index.html not found in $(SourceFolder). Commit it there or update 'SourceFolder'."
+        exit 1
+      }
+      Write-Host "✓ index.html found at: $index"
 
-# 2) Package the SourceFolder contents to site.zip (no external tools)
-- powershell: |
-    $src = "$(SourceFolder)"
-    $outDir = "$(Build.ArtifactStagingDirectory)"
-    if (!(Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir | Out-Null }
-    $zip = Join-Path $outDir "site.zip"
-
-    if (Test-Path $zip) { Remove-Item $zip -Force }
-
-    Write-Host "Creating ZIP from: $src"
-    Write-Host "Output ZIP: $zip"
-
-    Push-Location $src
-    $items = Get-ChildItem -Force | Where-Object { $_.Name -ne ".git" }
-    if (-not $items) {
-      Write-Error "Nothing to package in $src"
-      Pop-Location
-      exit 1
-    }
-
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $tmp = Join-Path $env:TEMP ("site_pkg_" + [Guid]::NewGuid())
-    New-Item -ItemType Directory -Path $tmp | Out-Null
-    foreach ($i in $items) {
-      $dest = Join-Path $tmp $i.Name
-      if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
-      Copy-Item $i.FullName -Destination $tmp -Recurse
-    }
-    [System.IO.Compression.ZipFile]::CreateFromDirectory($tmp, $zip)
-    Remove-Item -Recurse -Force $tmp
-    Pop-Location
-
-    if (!(Test-Path $zip)) {
-      Write-Error "Failed to create ZIP at $zip"
-      exit 1
-    }
-    $size = (Get-Item $zip).Length
-    Write-Host "ZIP created ($([math]::Round($size/1KB,2)) KB): $zip"
+# 4) Package the contents of SourceFolder into site.zip
+- task: PowerShell@2
   displayName: "Package site to ZIP"
+  inputs:
+    targetType: inline
+    script: |
+      $src = "$(SourceFolder)"
+      $outDir = "$(Build.ArtifactStagingDirectory)"
+      if (!(Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir | Out-Null }
+      $zip = Join-Path $outDir "site.zip"
 
-# 3) Optional: Extract for verification (helps prove contents)
+      if (Test-Path $zip) { Remove-Item $zip -Force }
+
+      Write-Host "Creating ZIP from: $src"
+      Write-Host "Output ZIP: $zip"
+
+      Push-Location $src
+      $items = Get-ChildItem -Force | Where-Object { $_.Name -ne ".git" }
+      if (-not $items) {
+        Write-Error "Nothing to package in $src"
+        Pop-Location
+        exit 1
+      }
+
+      Add-Type -AssemblyName System.IO.Compression.FileSystem
+      $tmp = Join-Path $env:TEMP ("site_pkg_" + [Guid]::NewGuid())
+      New-Item -ItemType Directory -Path $tmp | Out-Null
+      foreach ($i in $items) {
+        $dest = Join-Path $tmp $i.Name
+        if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+        Copy-Item $i.FullName -Destination $tmp -Recurse
+      }
+      [System.IO.Compression.ZipFile]::CreateFromDirectory($tmp, $zip)
+      Remove-Item -Recurse -Force $tmp
+      Pop-Location
+
+      if (!(Test-Path $zip)) {
+        Write-Error "Failed to create ZIP at $zip"
+        exit 1
+      }
+      $size = (Get-Item $zip).Length
+      Write-Host "✓ ZIP created ($([math]::Round($size/1KB,2)) KB): $zip"
+
+# 5) Optional: Extract site.zip to verify contents before deployment
 - task: ExtractFiles@1
   displayName: "Extract site.zip (verify)"
   inputs:
@@ -77,30 +90,35 @@ steps:
     destinationFolder: '$(Build.SourcesDirectory)/extracted'
     cleanDestinationFolder: true
 
-# 4) Verify extraction found index.html
-- powershell: |
-    $ex = "$(Build.SourcesDirectory)\extracted"
-    $idx = Join-Path $ex "index.html"
-    if (!(Test-Path $idx)) {
-      Write-Error "index.html not found after extraction at $ex"
-      Write-Host "Extracted contents:"
-      Get-ChildItem -Recurse $ex | Select FullName,Length | Format-Table
-      exit 1
-    }
-    Write-Host "Extraction OK. index.html: $idx"
+# 6) Verify extraction contains index.html
+- task: PowerShell@2
   displayName: "Verify extracted content"
+  inputs:
+    targetType: inline
+    script: |
+      $ex = "$(Build.SourcesDirectory)\extracted"
+      $idx = Join-Path $ex "index.html"
+      if (!(Test-Path $idx)) {
+        Write-Error "index.html not found after extraction at $ex"
+        Write-Host "Extracted contents:"
+        Get-ChildItem -Recurse $ex | Select FullName,Length | Format-Table
+        exit 1
+      }
+      Write-Host "✓ Extraction OK. index.html present: $idx"
 
-# 5) Deploy to Azure Static Web Apps (skip build since files are already static)
-# The task will push the folder you specify to your SWA named 'anshu-abhi-balloongame'
+# 7) Publish site.zip as a pipeline artifact (optional, for troubleshooting)
+- publish: '$(Build.ArtifactStagingDirectory)/site.zip'
+  artifact: sitezip
+  displayName: "Publish site.zip artifact"
+
+# 8) Deploy to Azure Static Web Apps
 - task: AzureStaticWebApp@0
   displayName: "Deploy to Azure Static Web Apps: anshu-abhi-balloongame"
   inputs:
     azure_static_web_apps_api_token: '$(SWA_DEPLOYMENT_TOKEN)'
-    app_location: '$(Build.SourcesDirectory)/extracted'  # deploy exactly what we extracted
-    output_location: ''          # not needed for pre-built static files
-    api_location: ''             # none
-    skip_app_build: true         # do not build
-    skip_api_build: true         # no API
-    is_static_export: true       # treat as static export
-    # Optionally set deployment_environment if you use named environments:
-    # deployment_environment: 'Production'
+    app_location: '$(Build.SourcesDirectory)/extracted'
+    api_location: ''
+    output_location: ''
+    skip_app_build: true
+    skip_api_build: true
+    is_static_export: true
