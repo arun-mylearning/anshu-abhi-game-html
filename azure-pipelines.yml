@@ -2,204 +2,105 @@ trigger:
 - main
 
 pool:
-  name: Default  # Replace with your actual pool name
+  name: Default   # self-hosted Windows pool
 
+# If index.html is in a subfolder, change SourceFolder (example: '$(Build.SourcesDirectory)\web')
 variables:
-  sb3FileName: 'AnshuAbhi-Game.sb3'  # Your .sb3 file name
+  SourceFolder: '$(Build.SourcesDirectory)'
 
 steps:
-# Step 1: Debug - Show directory structure
-- task: PowerShell@2
-  displayName: "Debug: Show initial directory structure"
-  inputs:
-    targetType: 'inline'
-    script: |
-      Write-Host "=== Initial Directory Structure ==="
-      Write-Host "Build.SourcesDirectory: $(Build.SourcesDirectory)"
-      Write-Host "Build.ArtifactStagingDirectory: $(Build.ArtifactStagingDirectory)"
-      
-      Write-Host "=== Contents of Source Directory ==="
-      if (Test-Path "$(Build.SourcesDirectory)") {
-        Get-ChildItem "$(Build.SourcesDirectory)" -Recurse | Format-Table Name, FullName, LastWriteTime
-      } else {
-        Write-Host "Source directory does not exist!"
-      }
+# 0) Sanity: show folders and list repo files
+- powershell: |
+    Write-Host "Agent.HomeDirectory: $(Agent.HomeDirectory)"
+    Write-Host "Agent.WorkFolder:   $(Agent.WorkFolder)"
+    Write-Host "Build.SourcesDirectory: $(Build.SourcesDirectory)"
+    Write-Host "Build.ArtifactStagingDirectory: $(Build.ArtifactStagingDirectory)"
+    Write-Host "Listing SourceFolder: $(SourceFolder)"
+    Get-ChildItem -Force "$(SourceFolder)" | Select Name,Length,LastWriteTime | Format-Table
+  displayName: "Debug: show directories and repo files"
 
-# Step 2: Verify .sb3 file exists
-- task: PowerShell@2
-  displayName: "Verify .sb3 file exists"
-  inputs:
-    targetType: 'inline'
-    script: |
-      $sb3Path = "$(Build.SourcesDirectory)\$(sb3FileName)"
-      Write-Host "Looking for .sb3 file at: $sb3Path"
-      
-      if (Test-Path $sb3Path) {
-        Write-Host "✓ Found .sb3 file!"
-        $fileInfo = Get-Item $sb3Path
-        Write-Host "File size: $($fileInfo.Length) bytes"
-        Write-Host "Last modified: $($fileInfo.LastWriteTime)"
-      } else {
-        Write-Error "✗ .sb3 file not found! Please ensure $(sb3FileName) is in your repository root."
-        Write-Host "Available files in source directory:"
-        Get-ChildItem "$(Build.SourcesDirectory)" | Format-Table Name, LastWriteTime
-        exit 1
-      }
+# 1) Verify index.html exists where we expect
+- powershell: |
+    $index = Join-Path "$(SourceFolder)" "index.html"
+    if (!(Test-Path $index)) {
+      Write-Error "index.html not found in $(SourceFolder). Move/commit index.html there or update 'SourceFolder'."
+      exit 1
+    }
+    Write-Host "Found index.html: $index"
+  displayName: "Verify index.html exists"
 
-# Step 3: Install TurboWarp Packager (Node.js)
-- task: PowerShell@2
-  displayName: "Install TurboWarp Packager"
-  inputs:
-    targetType: 'inline'
-    script: |
-      Write-Host "Installing TurboWarp Packager via npm..."
-      npm install -g @turbowarp/packager
-      
-      Write-Host "Verifying installation..."
-      npx @turbowarp/packager --help
+# 2) Package the SourceFolder contents to site.zip (no external tools)
+- powershell: |
+    $src = "$(SourceFolder)"
+    $outDir = "$(Build.ArtifactStagingDirectory)"
+    if (!(Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir | Out-Null }
+    $zip = Join-Path $outDir "site.zip"
 
-# Step 4: Convert .sb3 to HTML using TurboWarp Packager
-- task: PowerShell@2
-  displayName: "Convert .sb3 to HTML using TurboWarp"
-  inputs:
-    targetType: 'inline'
-    script: |
-      $sb3Path = "$(Build.SourcesDirectory)\$(sb3FileName)"
-      $outputDir = "$(Build.SourcesDirectory)\site"
-      
-      Write-Host "Converting .sb3 to HTML..."
-      Write-Host "Input: $sb3Path"
-      Write-Host "Output directory: $outputDir"
-      
-      # Create output directory
-      if (!(Test-Path $outputDir)) {
-        New-Item -ItemType Directory -Path $outputDir | Out-Null
-        Write-Host "Created output directory: $outputDir"
-      }
-      
-      # Convert using TurboWarp Packager
-      # This command converts the .sb3 file to an HTML file
-      npx @turbowarp/packager `
-        --input "$sb3Path" `
-        --output "$outputDir\index.html" `
-        --name "AnshuAbhi Game" `
-        --width 800 `
-        --height 600 `
-        --autoplay `
-        --fullscreen
-      
-      Write-Host "Conversion completed!"
-      
-      # Verify the HTML file was created
-      $htmlPath = "$outputDir\index.html"
-      if (Test-Path $htmlPath) {
-        Write-Host "✓ HTML file created successfully!"
-        $htmlInfo = Get-Item $htmlPath
-        Write-Host "HTML file size: $($htmlInfo.Length) bytes"
-        
-        # Show contents of the site directory
-        Write-Host "Contents of site directory:"
-        Get-ChildItem $outputDir -Recurse | Format-Table Name, FullName, Length
-      } else {
-        Write-Error "✗ HTML file was not created!"
-        exit 1
-      }
+    if (Test-Path $zip) { Remove-Item $zip -Force }
 
-# Step 5: Create ZIP file from the converted HTML
-- task: PowerShell@2
+    Write-Host "Creating ZIP from: $src"
+    Write-Host "Output ZIP: $zip"
+
+    Push-Location $src
+    $items = Get-ChildItem -Force | Where-Object { $_.Name -ne ".git" }
+    if (-not $items) {
+      Write-Error "Nothing to package in $src"
+      Pop-Location
+      exit 1
+    }
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $tmp = Join-Path $env:TEMP ("site_pkg_" + [Guid]::NewGuid())
+    New-Item -ItemType Directory -Path $tmp | Out-Null
+    foreach ($i in $items) {
+      $dest = Join-Path $tmp $i.Name
+      if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+      Copy-Item $i.FullName -Destination $tmp -Recurse
+    }
+    [System.IO.Compression.ZipFile]::CreateFromDirectory($tmp, $zip)
+    Remove-Item -Recurse -Force $tmp
+    Pop-Location
+
+    if (!(Test-Path $zip)) {
+      Write-Error "Failed to create ZIP at $zip"
+      exit 1
+    }
+    $size = (Get-Item $zip).Length
+    Write-Host "ZIP created ($([math]::Round($size/1KB,2)) KB): $zip"
   displayName: "Package site to ZIP"
-  inputs:
-    targetType: 'inline'
-    script: |
-      $sourceFolder = "$(Build.SourcesDirectory)\site"
-      $zipPath = "$(Build.ArtifactStagingDirectory)\site.zip"
-      
-      Write-Host "Packaging HTML site to ZIP..."
-      Write-Host "Source folder: $sourceFolder"
-      Write-Host "ZIP will be created at: $zipPath"
-      
-      if (Test-Path $sourceFolder) {
-        Write-Host "✓ Source folder exists. Contents:"
-        Get-ChildItem $sourceFolder -Recurse | Format-Table Name, FullName, Length
-        
-        # Ensure artifact staging directory exists
-        $stagingDir = "$(Build.ArtifactStagingDirectory)"
-        if (!(Test-Path $stagingDir)) {
-          New-Item -ItemType Directory -Path $stagingDir | Out-Null
-        }
-        
-        # Create ZIP file
-        Add-Type -AssemblyName System.IO.Compression.FileSystem
-        [System.IO.Compression.ZipFile]::CreateFromDirectory($sourceFolder, $zipPath)
-        
-        Write-Host "✓ ZIP created successfully!"
-        $zipInfo = Get-Item $zipPath
-        Write-Host "ZIP file size: $($zipInfo.Length) bytes"
-      } else {
-        Write-Error "✗ Source folder does not exist: $sourceFolder"
-        Write-Host "This means the .sb3 to HTML conversion failed."
-        exit 1
-      }
 
-# Step 6: Verify ZIP exists before extraction
-- task: PowerShell@2
-  displayName: "Verify ZIP exists"
-  inputs:
-    targetType: 'inline'
-    script: |
-      $zipPath = "$(Build.ArtifactStagingDirectory)\site.zip"
-      Write-Host "Verifying ZIP file at: $zipPath"
-      
-      if (Test-Path $zipPath) {
-        Write-Host "✓ ZIP file found!"
-        $zipInfo = Get-Item $zipPath
-        Write-Host "File size: $($zipInfo.Length) bytes"
-        Write-Host "Last modified: $($zipInfo.LastWriteTime)"
-      } else {
-        Write-Error "✗ ZIP file NOT found!"
-        Write-Host "Contents of ArtifactStagingDirectory:"
-        if (Test-Path "$(Build.ArtifactStagingDirectory)") {
-          Get-ChildItem "$(Build.ArtifactStagingDirectory)" | Format-Table Name, LastWriteTime
-        }
-        exit 1
-      }
-
-# Step 7: Extract ZIP file
+# 3) Optional: Extract for verification (helps prove contents)
 - task: ExtractFiles@1
-  displayName: "Extract site.zip"
+  displayName: "Extract site.zip (verify)"
   inputs:
     archiveFilePatterns: '$(Build.ArtifactStagingDirectory)/site.zip'
     destinationFolder: '$(Build.SourcesDirectory)/extracted'
     cleanDestinationFolder: true
 
-# Step 8: Verify extraction
-- task: PowerShell@2
-  displayName: "Verify extraction"
-  inputs:
-    targetType: 'inline'
-    script: |
-      $extractedPath = "$(Build.SourcesDirectory)\extracted"
-      Write-Host "Verifying extracted content at: $extractedPath"
-      
-      if (Test-Path $extractedPath) {
-        Write-Host "✓ Extraction successful!"
-        Write-Host "Extracted contents:"
-        Get-ChildItem $extractedPath -Recurse | Format-Table Name, FullName, Length, LastWriteTime
-        
-        # Check for index.html specifically
-        $indexPath = "$extractedPath\index.html"
-        if (Test-Path $indexPath) {
-          Write-Host "✓ index.html found in extracted content!"
-        } else {
-          Write-Warning "⚠ index.html not found in extracted content"
-        }
-      } else {
-        Write-Error "✗ Extraction failed - no content found at $extractedPath"
-      }
+# 4) Verify extraction found index.html
+- powershell: |
+    $ex = "$(Build.SourcesDirectory)\extracted"
+    $idx = Join-Path $ex "index.html"
+    if (!(Test-Path $idx)) {
+      Write-Error "index.html not found after extraction at $ex"
+      Write-Host "Extracted contents:"
+      Get-ChildItem -Recurse $ex | Select FullName,Length | Format-Table
+      exit 1
+    }
+    Write-Host "Extraction OK. index.html: $idx"
+  displayName: "Verify extracted content"
 
-# Step 9: Deploy to Azure Static Web Apps (replace with your actual deployment task)
+# 5) Deploy to Azure Static Web Apps (skip build since files are already static)
+# The task will push the folder you specify to your SWA named 'anshu-abhi-balloongame'
 - task: AzureStaticWebApp@0
-  displayName: 'Deploy to Azure Static Web Apps'
+  displayName: "Deploy to Azure Static Web Apps: anshu-abhi-balloongame"
   inputs:
-    app_location: '$(Build.SourcesDirectory)/extracted'  # Use extracted content
-    # Add your other deployment parameters here
+    azure_static_web_apps_api_token: '$(SWA_DEPLOYMENT_TOKEN)'
+    app_location: '$(Build.SourcesDirectory)/extracted'  # deploy exactly what we extracted
+    output_location: ''          # not needed for pre-built static files
+    api_location: ''             # none
+    skip_app_build: true         # do not build
+    skip_api_build: true         # no API
+    is_static_export: true       # treat as static export
+    # Optionally set deployment_environment if you use named environments:
+    # deployment_environment: 'Production'
