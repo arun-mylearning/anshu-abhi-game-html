@@ -1,74 +1,97 @@
 trigger:
-  branches:
-    include:
-      - main
+- main
 
 pool:
-  name: Default
-
-variables:
-  SB3_FILE: 'AnshuAbhi-Game.sb3'
-  BUILD_DIR: 'site'
+  name: Default  # Replace with your pool name
 
 steps:
-# 1. Change directory explicitly to Sources Directory
-- script: |
-    pushd "$(Build.SourcesDirectory)"
-    echo "Current working directory: %CD%"
-  displayName: 'cd to sources'
+# Debug step (from Step 1 above)
+- task: PowerShell@2
+  displayName: "Debug: Show agent directories"
+  inputs:
+    targetType: 'inline'
+    script: |
+      Write-Host "=== Agent Directory Information ==="
+      Write-Host "Agent.HomeDirectory: $(Agent.HomeDirectory)"
+      Write-Host "Build.SourcesDirectory: $(Build.SourcesDirectory)"
+      Write-Host "Build.ArtifactStagingDirectory: $(Build.ArtifactStagingDirectory)"
+      
+      Write-Host "=== Directory Contents ==="
+      Write-Host "Source directory contents:"
+      Get-ChildItem "$(Build.SourcesDirectory)" | Format-Table Name, LastWriteTime
 
-# 2. Verify the Scratch file exists
-- script: |
-    echo "Verifying existence of %SB3_FILE%"
-    if not exist "%SB3_FILE%" (
-      echo "ERROR: %SB3_FILE% missing!"
-      exit /b 1
-    )
-    echo "%SB3_FILE% found."
-  displayName: 'Verify .sb3 exists'
+# Your existing steps to convert .sb3 to HTML (TurboWarp, etc.)
+# ... (add your TurboWarp conversion steps here)
 
-# 3. Initialize npm and package Scratch project into ZIP in source directory
-- script: |
-    npm init -y >nul 2>&1
-    npm install @turbowarp/packager --no-save
-    npx turbopackager "%SB3_FILE%" --target html --output "$(Build.SourcesDirectory)\site.zip"
-    if not exist "$(Build.SourcesDirectory)\site.zip" (
-      echo "ERROR: site.zip was not created"
-      dir "$(Build.SourcesDirectory)"
-      exit /b 1
-    )
-    echo "site.zip successfully created at $(Build.SourcesDirectory)\site.zip"
-  displayName: 'Package Scratch to HTML'
+# Create ZIP in the Artifacts staging directory (not sources)
+- task: PowerShell@2
+  displayName: "Package site to ZIP"
+  inputs:
+    targetType: 'inline'
+    script: |
+      $sourceFolder = "$(Build.SourcesDirectory)\site"  # Assuming TurboWarp creates 'site' folder
+      $zipPath = "$(Build.ArtifactStagingDirectory)\site.zip"
+      
+      Write-Host "Source folder: $sourceFolder"
+      Write-Host "ZIP will be created at: $zipPath"
+      
+      if (Test-Path $sourceFolder) {
+        Write-Host "Source folder exists. Contents:"
+        Get-ChildItem $sourceFolder
+        
+        # Create ZIP
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [System.IO.Compression.ZipFile]::CreateFromDirectory($sourceFolder, $zipPath)
+        
+        Write-Host "ZIP created successfully at: $zipPath"
+        Write-Host "ZIP file size: $((Get-Item $zipPath).Length) bytes"
+      } else {
+        Write-Error "Source folder does not exist: $sourceFolder"
+        exit 1
+      }
 
-# 4. Extract the ZIP file from the same exact path
+# Verify ZIP exists before extraction
+- task: PowerShell@2
+  displayName: "Verify ZIP exists"
+  inputs:
+    targetType: 'inline'
+    script: |
+      $zipPath = "$(Build.ArtifactStagingDirectory)\site.zip"
+      Write-Host "Looking for ZIP at: $zipPath"
+      
+      if (Test-Path $zipPath) {
+        Write-Host "✓ ZIP file found!"
+        Write-Host "File size: $((Get-Item $zipPath).Length) bytes"
+      } else {
+        Write-Error "✗ ZIP file NOT found at expected location"
+        Write-Host "Contents of ArtifactStagingDirectory:"
+        Get-ChildItem "$(Build.ArtifactStagingDirectory)" | Format-Table Name, LastWriteTime
+        exit 1
+      }
+
+# Extract ZIP from the Artifacts staging directory
 - task: ExtractFiles@1
+  displayName: "Extract site.zip"
   inputs:
-    archiveFilePatterns: '$(Build.SourcesDirectory)\site.zip'
-    destinationFolder: '$(Build.ArtifactStagingDirectory)\$(BUILD_DIR)'
+    archiveFilePatterns: '$(Build.ArtifactStagingDirectory)/site.zip'
+    destinationFolder: '$(Build.SourcesDirectory)/extracted'
     cleanDestinationFolder: true
-  displayName: 'Extract site.zip'
 
-# 5. Verify extraction by checking index.html exists
-- script: |
-    if exist "$(Build.ArtifactStagingDirectory)\$(BUILD_DIR)\index.html" (
-      echo "Extraction verified: index.html found."
-    ) else (
-      echo "ERROR: index.html missing after extraction!"
-      exit /b 1
-    )
-  displayName: 'Verify extraction'
-
-# 6. Publish extracted artifact (optional)
-- task: PublishBuildArtifacts@1
+# Verify extraction
+- task: PowerShell@2
+  displayName: "Verify extraction"
   inputs:
-    pathToPublish: '$(Build.ArtifactStagingDirectory)\$(BUILD_DIR)'
-    artifactName: 'site'
-  displayName: 'Publish site artifact'
+    targetType: 'inline'
+    script: |
+      $extractedPath = "$(Build.SourcesDirectory)\extracted"
+      Write-Host "Checking extracted content at: $extractedPath"
+      
+      if (Test-Path $extractedPath) {
+        Write-Host "✓ Extraction successful! Contents:"
+        Get-ChildItem $extractedPath -Recurse | Format-Table Name, LastWriteTime
+      } else {
+        Write-Error "✗ Extraction failed - no content found"
+      }
 
-# 7. Deploy to Azure Static Web Apps
-- script: |
-    npm install @azure/static-web-apps-cli --no-save
-    npx swa deploy "$(Build.ArtifactStagingDirectory)\$(BUILD_DIR)" --deployment-token "$(SWA_TOKEN)" --env production --app-name "anshu-abhi-balloongame"
-  env:
-    SWA_TOKEN: $(SWA_TOKEN)
-  displayName: 'Deploy to Azure Static Web Apps'
+# Continue with your Azure Static Web Apps deployment
+# ... (add your deployment steps here)
